@@ -1,0 +1,357 @@
+---
+  title: "Capstone Project Bloom Predictions"
+author: "Amie Bui"
+date: "2026-02-18"
+output: pdf_document
+---
+  
+  ```{r setup, include = FALSE, echo=FALSE}
+# DO NOT ALTER THIS CHUNK
+knitr::opts_chunk$set(
+  echo = TRUE,
+  eval = TRUE,
+  fig.width = 5,
+  fig.asp = 0.618,
+  dpi = 120,
+  fig.align = "center",
+  cache = FALSE
+)
+# Load required packages
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(lubridate))
+suppressPackageStartupMessages(library(nasapower))
+```
+
+# -----------------------United States: Import Data ----------------------------
+
+```{r}
+dc_weather <- read.csv("~/STAT490 Capstone/USW00013743.csv")
+```
+
+## Clean Data set
+
+```{r}
+dc_weather_clean <- dc_weather %>%
+  mutate(
+    Date = as.Date(Date),
+    year = year(Date),
+    TMEAN = (tmax + tmin) / 2
+  ) %>%
+  filter(!is.na(TMEAN))
+
+head(dc_weather_clean)
+```
+
+## Bloom Dates
+
+```{r}
+bloom_url <- "https://raw.githubusercontent.com/GMU-CherryBlossomCompetition/peak-bloom-prediction/main/data/washingtondc.csv"
+blooms <- read.csv(bloom_url)
+```
+
+## Calculate Chill Threshold
+
+```{r}
+chill_threshold <- 32
+
+
+dc_weather_clean <- dc_weather_clean %>%
+  mutate(
+    Date = as.Date(Date),
+    month_day = format(Date, "%m-%d"),
+    #shift so chill corresponds with correct year
+    bloom_year = year(Date) + if_else(month(Date) >= 11, 1L, 0L),
+  )
+
+
+
+chill_data <- dc_weather_clean %>%
+  filter(month_day >= "11-01" | month_day <= "01-31") %>%
+  group_by(bloom_year) %>%
+  summarise(chill_days = sum(TMEAN < chill_threshold))
+
+```
+
+## Compute Growing Degree Days
+
+i. If temp is greater than 45 degrees fahrenheit, it is counted as "warmth"
+
+```{r}
+
+gdd_data <- dc_weather_clean %>%
+  filter(month_day >= "02-01" & month_day <= "04-30") %>%
+  mutate(gdd = pmax(TMEAN - 45, 0)) %>%
+  group_by(bloom_year) %>%
+  summarise(total_heat = sum(gdd))
+
+```
+
+## Merge data
+
+```{r}
+
+merged_data <- chill_data %>%
+  left_join(gdd_data, by = "bloom_year") %>%
+  left_join(blooms, by = c("bloom_year" = "year"))%>% 
+  select(-location, -lat, -long, - alt) %>%
+  drop_na(bloom_doy, chill_days, total_heat)
+
+```
+
+## Split into test and training data
+
+```{r}
+
+merged_data <- merged_data %>% arrange(bloom_year)
+
+n <- nrow(merged_data)
+split_index <- floor(0.8 * n)
+
+train_data <- merged_data[1:split_index, ]
+test_data  <- merged_data[(split_index + 1):n, ]
+
+```
+
+## Fit Model
+
+```{r}
+
+model1 <- lm(bloom_doy ~ chill_days + total_heat + total_heat * chill_days,
+             data = train_data)
+
+
+```
+
+
+
+
+## Testing on Held Out Test Set
+
+```{r}
+
+test_data$predicted_bloom <- predict(model1, newdata = test_data)
+MAE <- mean(abs(test_data$bloom_doy - test_data$predicted_bloom))
+MAE
+```
+
+# --------------------------Kyoto, Japan: Import Data Set-----------------------
+
+## Get Weather Data for Kyoto Japan
+
+```{r}
+
+kyoto_weather <- get_power(
+  community = "AG",
+  temporal_api = "daily",
+  lonlat = c(135.7681, 35.0116), #Location of Kyoto
+  pars = c("T2M_MAX", "T2M_MIN"),
+  dates = c("1981-01-01", "2023-12-31")
+)
+
+kyoto_weather <- kyoto_weather %>%
+  mutate(TMEAN = (T2M_MAX + T2M_MIN) / 2)
+
+```
+
+
+## Bloom Dates Kyoto Japan
+
+```{r}
+kyoto <- read.csv("~/STAT490 Capstone/kyoto.csv")
+```
+
+
+
+## Calculate Chill Threshold
+
+```{r}
+chill_threshold <- 0
+
+
+kyoto_weather <- kyoto_weather %>%
+  mutate(
+    #Shift chill over so it is associated with the correct bloom year
+    bloom_year = if_else(MM >= 11, YEAR + 1L, YEAR)
+  )
+
+
+chill_data_japan <- kyoto_weather %>%
+  filter(MM >= 11| MM <= 1) %>%
+  group_by(bloom_year) %>%
+  summarise(chill_days = sum(TMEAN < chill_threshold))
+
+```
+
+## Compute Growing Degree Days
+
+i. If temp is greater than 45 degrees fahrenheit, it is counted as "warmth"
+
+```{r}
+
+gdd_data_japan <- kyoto_weather %>%
+  filter(MM >= 2 & MM <=  4) %>%
+  mutate(gdd = pmax(TMEAN - 7.222, 0)) %>%
+  group_by(bloom_year) %>%
+  summarise(total_heat = sum(gdd))
+
+```
+
+## Merge data
+
+```{r}
+
+merged_data_japan <- chill_data_japan %>%
+  left_join(gdd_data_japan, by = "bloom_year") %>%
+  left_join(kyoto, by = c("bloom_year" = "year"))%>% 
+  select(-location, -lat, -long, - alt) %>%
+  drop_na(bloom_doy, chill_days, total_heat)
+```
+
+## Split into test and training data
+
+```{r}
+
+merged_data_japan <- merged_data_japan %>% arrange(bloom_year)
+
+n <- nrow(merged_data_japan)
+split_index <- floor(0.8 * n)
+
+train_data_japan <- merged_data_japan[1:split_index, ]
+test_data_japan  <- merged_data_japan[(split_index + 1):n, ]
+
+```
+
+## Fit Model
+
+```{r}
+
+model2<- lm(bloom_doy ~ chill_days + total_heat + total_heat * chill_days,
+            data = train_data_japan)
+
+```
+
+
+## Testing on Held Out Test Set
+
+```{r}
+
+test_data_japan$predicted_bloom <- predict(model2, newdata = test_data_japan)
+MAE <- mean(abs(test_data_japan$bloom_doy - test_data_japan$predicted_bloom))
+MAE
+```
+# ---------------------------Switzerland: Import Data Set-----------------------
+
+
+## Get Weather Data for Liestal, Switzerland
+
+```{r}
+
+switzerland_weather <- get_power(
+  community = "AG",
+  temporal_api = "daily",
+  lonlat = c(7.735, 47.484), #Location of Liestal
+  pars = c("T2M_MAX", "T2M_MIN"),
+  dates = c("1981-01-01", "2023-12-31")
+)
+
+switzerland_weather <- switzerland_weather %>%
+  mutate(TMEAN = (T2M_MAX + T2M_MIN) / 2)
+
+```
+
+
+## Bloom Dates Liestal, Switzerland
+
+```{r}
+liestal <- read.csv("~/STAT490 Capstone/liestal.csv")
+```
+
+
+
+## Calculate Chill Threshold
+
+```{r}
+chill_threshold <- 0
+
+
+switzerland_weather <- switzerland_weather %>%
+  mutate(
+    #Shift chill over so it is associated with the correct bloom year
+    bloom_year = if_else(MM >= 11, YEAR + 1L, YEAR)
+  )
+
+
+chill_data_switzerland <- switzerland_weather %>%
+  filter(MM >= 11| MM <= 1) %>%
+  group_by(bloom_year) %>%
+  summarise(chill_days = sum(TMEAN < chill_threshold))
+
+```
+
+## Compute Growing Degree Days
+
+i. If temp is greater than 45 degrees fahrenheit, it is counted as "warmth"
+
+```{r}
+
+gdd_data_switzerland <- switzerland_weather %>%
+  filter(MM >= 2 & MM <=  4) %>%
+  mutate(gdd = pmax(TMEAN - 7.222, 0)) %>%
+  group_by(bloom_year) %>%
+  summarise(total_heat = sum(gdd))
+
+```
+
+## Merge data
+
+```{r}
+
+merged_data_switzerland <- chill_data_switzerland %>%
+  left_join(gdd_data_switzerland, by = "bloom_year") %>%
+  left_join(liestal, by = c("bloom_year" = "year"))%>% 
+  select(-location, -lat, -long, - alt) %>%
+  drop_na(bloom_doy, chill_days, total_heat)
+```
+
+## Split into test and training data
+
+```{r}
+
+merged_data_switzerland <- merged_data_switzerland %>% arrange(bloom_year)
+
+n <- nrow(merged_data_japan)
+split_index <- floor(0.8 * n)
+
+train_data_switzerland <- merged_data_switzerland[1:split_index, ]
+test_data_switzerland  <- merged_data_switzerland[(split_index + 1):n, ]
+
+```
+
+## Fit Model
+
+```{r}
+
+model3<- lm(bloom_doy ~ chill_days + total_heat + total_heat * chill_days,
+            data = train_data_switzerland)
+
+```
+
+
+## Testing on Held Out Test Set
+
+```{r}
+
+test_data_switzerland$predicted_bloom <- predict(model3, newdata = test_data_japan)
+MAE <- mean(abs(test_data_switzerland$bloom_doy - test_data_switzerland$predicted_bloom))
+MAE
+```
+
+#--------------------United States Prediction 2026------------------------------
+
+```{r}
+
+accuweather_forecast_2026 <- read.csv("~/STAT490 Capstone/accuweather_forecast_2026.csv")
+
+```
+
